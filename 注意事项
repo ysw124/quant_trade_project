@@ -1,0 +1,16 @@
+
+# 给git设置vpn端口
+方案一：给 Git 设置代理（最有效）
+如果你电脑上开着“科学上网”工具（VPN），Git 默认可能并没有走这个代理，所以需要手动告诉它。
+
+确认代理端口： 打开你的 VPN 软件设置，查看 HTTP/HTTPS 代理端口（通常是 7890、1080 或 10809）。
+
+在 PyCharm 终端执行：
+
+Bash
+# 如果你的端口是 7890，执行这两行（记得改端口号）
+git config --global http.proxy http://127.0.0.1:7890
+git config --global https.proxy http://127.0.0.1:7890
+重试： 现在再去点 PyCharm 的 Pull 或 Push。
+
+提示： 如果以后想取消代理，输入 git config --global --unset http.proxy

@@ -1,3 +1,5 @@
+# 获取东方财富的精选新闻
+
 import requests
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
