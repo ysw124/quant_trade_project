@@ -1,8 +1,7 @@
 # market_radar.py
 # 用于整合不同网站的实时信息
-
-from harvesters.akshare_harvesters import QuantDataHarvester
-from scrapers.gov_cn_scrapers import GovernmentPolicyScraper
+from python_quant.harvesters.akshare_harvesters import QuantDataHarvester
+from python_quant.scrapers.gov_cn_scrapers import GovernmentPolicyScraper
 from datetime import datetime
 import pandas as pd
 

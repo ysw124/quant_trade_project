@@ -14,3 +14,5 @@ git config --global https.proxy http://127.0.0.1:7890
 重试： 现在再去点 PyCharm 的 Pull 或 Push。
 
 提示： 如果以后想取消代理，输入 git config --global --unset http.proxy
+
+# 2026/1/27   注意此刻的映射表并不完整，之后建议使用qmt生成新的对应关系 /cache 里面的两个pkl映射表
