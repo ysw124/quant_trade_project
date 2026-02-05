@@ -1,100 +1,61 @@
 import requests
-import pandas as pd  # 建议使用缩写 pd
-from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
-from datetime import datetime
+import pandas as pd
 import time
+from fake_useragent import UserAgent
 
 
 class GovernmentPolicyScraper:
-    def __init__(self, pages=2):  # 默认抓2页通常足够覆盖最新政策
-        self.pages = pages
+    def __init__(self):
         self.ua = UserAgent()
-        # 预先生成 URL 列表
-        self.url_list = self._generate_url_list()
-
-    def _generate_url_list(self):
-        urls = []
-        for page in range(0, self.pages):
-            if page == 0:
-                urls.append("https://www.gov.cn/zhengce/zuixin/home.htm")
-            else:
-                urls.append(f"https://www.gov.cn/zhengce/zuixin/home_{page}.htm")
-        return urls
-
-    def parse_news_gov(self, html):
-        soup = BeautifulSoup(html, 'html.parser')
-        news_items = soup.select('.news_box h4')
-        news_data = []
-
-        for item in news_items:
-            a_tag = item.select_one('a')
-            if not a_tag: continue
-
-            title = a_tag.get_text(strip=True)
-            link = a_tag['href']
-
-            # 自动补全绝对路径
-            if link.startswith('./'):
-                full_link = f"https://www.gov.cn/zhengce/zuixin/{link.replace('./', '')}"
-            elif link.startswith('/'):
-                full_link = f"https://www.gov.cn{link}"
-            else:
-                full_link = link
-
-            date_span = item.select_one('.date')
-            date = date_span.get_text(strip=True) if date_span else None
-
-            # 统一列名，与之前的 Harvester 保持风格一致
-            news_data.append({
-                '发布日期': date,
-                '政策标题': title,
-                '详情链接': full_link,
-                '来源': '中国政府网'
-            })
-        return news_data
+        # 直接使用你发现的那个“金矿”接口
+        self.api_url = "https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json"
 
     def get_news_df(self):
-        """
-        核心优化：返回 DataFrame 格式，方便后续合并
-        """
-        all_news = []
-        headers = {'User-Agent': self.ua.random}
+        headers = {
+            'User-Agent': self.ua.random,
+            'Referer': 'https://www.gov.cn/zhengce/zuixin.htm'
+        }
 
-        for url in self.url_list:
-            try:
-                # 增加超时控制，防止程序卡死
-                res = requests.get(url, headers=headers, timeout=10)
-                res.encoding = 'utf-8'  # 政府网强制 utf-8 比较稳妥
-                res.raise_for_status()
+        try:
+            res = requests.get(self.api_url, headers=headers, timeout=15)
+            res.encoding = 'utf-8'
+            raw_data = res.json()
 
-                page_data = self.parse_news_gov(res.text)
-                all_news.extend(page_data)
+            news_data = []
+            for item in raw_data:
+                # --- 精确匹配你提供的键名 ---
+                title = item.get('TITLE', '').strip()
+                date = item.get('DOCRELPUBTIME', '').strip()
+                link = item.get('URL', '').strip()
 
-                # 礼貌爬取，避免请求过快
-                time.sleep(0.5)
+                if not title: continue
 
-            except Exception as e:
-                print(f"爬取 {url} 时出错: {e}")
+                # 补全链接逻辑
+                full_link = f"https://www.gov.cn{link}" if link.startswith('/') else link
 
-        # 转换为 DataFrame
-        df = pd.DataFrame(all_news)
+                news_data.append({
+                    '发布日期': date,
+                    '政策标题': title,
+                    '详情链接': full_link,
+                    '来源': '中国政府网'
+                })
 
-        # 简单清洗：确保日期格式统一或去除空值
-        if not df.empty:
-            df = df.dropna(subset=['政策标题'])
-            # 可以在这里做进一步的关键词过滤，例如只看“印发”、“通知”类文件
+            df = pd.DataFrame(news_data)
 
-        return df
+            # 格式化与清理
+            if not df.empty:
+                # 统一重置索引，看起来更整齐
+                df = df.sort_values(by='发布日期', ascending=False).reset_index(drop=True)
+                print(f"✅ 解析成功！获取到 {len(df)} 条政策。")
 
+            return df
 
+        except Exception as e:
+            print(f"❌ 解析 JSON 出错: {e}")
+            return pd.DataFrame()
+
+# --- 使用示例 ---
 if __name__ == '__main__':
-    scraper = GovernmentPolicyScraper(pages=2)
-    df_policy = scraper.get_news_df()
-
-    #file_path = 'market_report.csv'
-    # 保存文件
-    #df_policy.to_csv(file_path, index=False, encoding='utf-8-sig')
-    if not df_policy.empty:
-        print(f"\n[成功抓取 {len(df_policy)} 条政策快讯]:")
-        print(df_policy[['发布日期', '政策标题']].head(10).to_string(index=False))
+    scraper = GovernmentPolicyScraper()
+    df = scraper.get_news_df()
+    print(df.head())
