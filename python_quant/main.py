@@ -19,6 +19,7 @@ def run_daily_pipeline():
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在生成今日情报...")
         intelligence = radar.get_full_intelligence()
+        print(f"初筛完成，共有 {len(intelligence)} 条核心情报进入 AI 评分环节...")
 
         # 2. 信息映射层 (The Interpreter)
         # 加载本地的行业/种子概念映射表
@@ -39,11 +40,6 @@ def run_daily_pipeline():
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 策略扫描完成，发现 {len(candidates_df)} 个共振机会。")
 
         #4. 数据持久化 (存入本地数据库)
-        # 这一步非常重要，是为了以后复盘 AI 准不准
-        db.save_analysis(
-            news_list = intelligence['政策面']['政策标题'].tolist(),
-            scores_map = getattr(scanner, 'last_ai_scores', {}) # 假设你在 scanner 里存了一份备份
-        )
 
         # 5. 检查整体数据
         all_empty = True

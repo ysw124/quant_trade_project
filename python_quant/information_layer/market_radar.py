@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd
 from utils.db_helper import QuantumDB
 from python_quant.logic_layer.analyst_agent import AnalystAgent
+import time
 
 
 class MarketRadar:
@@ -15,21 +16,11 @@ class MarketRadar:
 
     def __init__(self):
         self.harvester = QuantDataHarvester()
-        self.policy_scraper = GovernmentPolicyScraper(pages=2)
+        self.policy_scraper = GovernmentPolicyScraper()
         self.db_client = QuantumDB()
         self.agent = AnalystAgent()  # 新增：用于预分析新闻
 
-    # def get_full_intelligence(self):
-    #     """获取所有维度的原始数据包"""
-    #     print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在执行全维度市场扫描...")
-    #
-    #     # 获取 AkShare 端的 5 个维度
-    #     intel = self.harvester.get_all_raw_data()
-    #
-    #     # 补充爬虫端的 政策维度
-    #     intel["政策面"] = self.policy_scraper.get_news_df()
-    #
-    #     return intel
+
 
     def get_full_intelligence(self):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在执行全维度市场扫描...")
@@ -41,29 +32,43 @@ class MarketRadar:
         # 2. 处理政策面：去重 -> 分析 -> 入库
         if not policy_df.empty:
             print("⚖️ 正在处理政府政策...")
-            # 过滤掉数据库里已有的标题
-            new_policies = self._filter_new_items(policy_df, '政策标题','policy')
-            if not new_policies.empty:
-                # 预分析：将 '政策标题' 翻译成 分数和板块
-                print(f"✨ 发现 {len(new_policies)} 条新政策，正在请求 AI 分析...")
-                analyzed_df = self._analyze_and_store(new_policies, '政策标题', 'policy')
-                intel["政策面"] = analyzed_df
+
+            # 入库前重命名，对齐数据库字段 (pub_date, title, source)
+            policy_df = policy_df.rename(columns={'发布日期': 'pub_date', '政策标题': 'title', '详情链接':'link_url'})
+
+            # 直接把爬到的 1000 条往库里塞，save_news_batch 内部的 INSERT OR IGNORE 会自动去重
+            self.db_client.save_news_batch(policy_df, source_type='policy')
+
+            # 找出库里最近一年、且 ai_score=0 的新政策
+            pending_policies = self.db_client.get_pending_news(days=365, source_type='policy')
+
+            if not pending_policies.empty:
+                print(f"✨ 发现 {len(pending_policies)} 条新政策，请求 AI 批量分析...")
+                # 调用你提供的分析函数
+                self._analyze_and_store(pending_policies, 'title', 'policy')
             else:
-                print("✅ 政策库已是最新，无新增。")
-                intel["政策面"] = pd.DataFrame(columns=['日期', '政策标题', 'ai_score', 'sectors'])  # 全是旧闻
+                print("政策库无打分新闻")
+
+            intel["政策面"] = self.db_client.get_today_analyzed_news('policy')
 
         # 3. 处理快讯面：去重 -> 分析 -> 入库
         flash_df = intel.get("快讯面", pd.DataFrame())
         if not flash_df.empty:
             print("📰 正在处理实时快讯...")
-            # 假设快讯的列名是 'content' 或 '标题'，请根据你的 fetch_cls_news 结果调整
-            flash_col = '标题' if '标题' in flash_df.columns else flash_df.columns[0]
-            new_flash = self._filter_new_items(flash_df, flash_col,'flash')
-            if not new_flash.empty:
-                print(f"🔥 发现 {len(new_flash)} 条新快讯，同步 AI 评分中...")
-                self._analyze_and_store(new_flash, flash_col, 'flash')
-            else:
-                print("✅ 快讯库已同步。")
+
+            # 核心修复 2：快讯通常内容参差不齐，必须清洗
+            # 假设快讯对应的列名在 DataFrame 里叫 'title' 或 'content'
+            # df[["发布时间", "标题", "内容"]]
+            print("📰 正在处理实时快讯...")
+            flash_df = flash_df.rename(columns={'标题': 'title', '发布时间': 'pub_date','内容':'content'})
+            self.db_client.save_news_batch(flash_df, source_type='flash')
+
+            pending_flash = self.db_client.get_pending_news(days=3, source_type='flash')
+            if not pending_flash.empty:
+                self._analyze_and_store(pending_flash, 'title', 'flash')
+
+            intel["快讯面"] = self.db_client.get_today_analyzed_news('flash')
+
         return intel
 
     def _filter_new_items(self, df, col_name, source_type):
@@ -90,28 +95,50 @@ class MarketRadar:
         # 返回不在库中的新鲜新闻
         return df[~df[col_name].isin(existing_titles)]
 
+
+
     def _analyze_and_store(self, df, col_name, source_type):
-        """调用 AI 分析并存入数据库"""
+        """调用 AI 分析并更新数据库中的评分"""
+        if df.empty:
+            return df
         titles = df[col_name].tolist()
-        # 调用你的 agent：输入标题列表，返回 {标题: {'score': 90, 'sectors': {...}}}
-        analysis_results = self.agent.batch_analyze(titles)
 
-        # 组装入库数据
-        to_db_list = []
-        for _, row in df.iterrows():
-            title = row[col_name]
-            analysis = analysis_results.get(title, {'score': 0, 'sectors': {}})
+        # 1. 批量调用 AI 代理
+        # analysis_results 格式: {标题: {'score': 90, 'sectors': [...]}}
+        chunk_size = 15
 
-            to_db_list.append({
-                'date': row.get('日期', datetime.now().strftime('%Y-%m-%d')),
-                'title': title,
-                'ai_score': analysis['score'],
-                'sectors': analysis['sectors']
-            })
-            # 存入数据库
-        to_db_df = pd.DataFrame(to_db_list)
-        self.db_client.save_news_batch(to_db_df, source_type)
-        return to_db_df
+        for i in range(0, len(titles), chunk_size):
+            chunk = titles[i: i + chunk_size]
+            print(f" - 正在分析第 {i // chunk_size + 1} 组数据 ({len(chunk)} 条)...")
+
+            try:
+                # 批量调用 AI
+                analysis_results = self.agent.batch_analyze(chunk)
+
+                # 更新数据库
+                for title in chunk:
+                    analysis = analysis_results.get(title)
+                    if analysis:
+                        if analysis['score'] == 0:
+                            analysis['score'] = 1
+                        self.db_client.update_news_score(
+                            title=title,
+                            score=analysis['score'],
+                            sectors=analysis['sectors']
+                        )
+                        if analysis['score'] >= 85:
+                            self.db_client.record_strategy_hit(title, analysis['sectors'])
+
+                # 稍微停顿一下，防止 API 限制频率
+                time.sleep(1)
+
+            except Exception as e:
+                print(f"❌ 这一组 AI 分析失败: {e}")
+                continue  # 这一组失败了跳过，不影响后面
+
+        return df
+
+
 
     def format_to_text(self, intel, top_n=10):
         """将数据字典转化为易读的 Markdown 文本（为 LLM 准备）"""
@@ -147,6 +174,38 @@ class MarketRadar:
 if __name__ == "__main__":
     # 单独测试 Radar 模块
     radar = MarketRadar()
+    print("🚀 开始运行市场雷达测试...")
+    start_time = datetime.now()
     data = radar.get_full_intelligence()
-    text = radar.format_to_text(data)
-    print(text)
+    # text = radar.format_to_text(data)
+    # print(text)
+    # --- 验证逻辑 ---
+    print("\n" + "=" * 30)
+    print("📊 运行结果验证：")
+
+    for key in ["政策面", "快讯面"]:
+        df = data[key]
+        print(f"\n[{key}] 模块:")
+        print(f" - 总计可用情报数: {len(df)} 条")
+
+        if not df.empty:
+            # 验证分数是否都已打上
+            zero_scores = df[df['ai_score'] == 0]
+            if zero_scores.empty:
+                print(f" ✅ 成功：所有数据均已打分。")
+            else:
+                print(f" ❌ 警告：仍有 {len(zero_scores)} 条数据未打分。")
+
+            # 验证高分分布
+            high_score_count = len(df[df['ai_score'] >= 80])
+            print(f" - 发现高价值情报 (>=80分): {high_score_count} 条")
+
+            # 打印最新的一条看看
+            print(f" - 最新情报样例: {df.iloc[0]['政策标题'][:30]}...")
+        else:
+            print(" ⚠️ 提示：今日无新增或有效情报。")
+
+    end_time = datetime.now()
+    print("\n" + "=" * 30)
+    print(f"⏱️ 总耗时: {end_time - start_time}")
+    print("✅ 测试结束。数据已同步至数据库。")
